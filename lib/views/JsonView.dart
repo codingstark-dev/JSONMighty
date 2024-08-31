@@ -18,6 +18,10 @@ class JsonViewerPageState extends State<JsonViewerPage> {
   TreeNode? _rootNode;
   bool _isLoading = false;
   int _totalNodes = 0;
+  String _searchQuery = '';
+  List<TreeNode> _searchResults = [];
+  int _currentSearchIndex = -1;
+  final TextEditingController _searchController = TextEditingController();
 
   Future<void> _loadJsonFile() async {
     setState(() {
@@ -50,6 +54,66 @@ class JsonViewerPageState extends State<JsonViewerPage> {
     }
   }
 
+  void _performSearch() {
+    final query = _searchController.text;
+    setState(() {
+      _searchQuery = query;
+      _searchResults = _searchNodes(_rootNode, query);
+      _currentSearchIndex = _searchResults.isNotEmpty ? 0 : -1;
+    });
+  }
+
+  List<TreeNode> _searchNodes(TreeNode? node, String query) {
+    List<TreeNode> results = [];
+    if (node == null) return results;
+
+    if (node.key.toLowerCase().contains(query.toLowerCase()) ||
+        node.value.toLowerCase().contains(query.toLowerCase())) {
+      results.add(node);
+    }
+
+    for (var child in node.children) {
+      results.addAll(_searchNodes(child, query));
+    }
+
+    return results;
+  }
+
+  void _scrollToNextResult() {
+    if (_searchResults.isEmpty) return;
+    setState(() {
+      _currentSearchIndex = (_currentSearchIndex + 1) % _searchResults.length;
+    });
+    _scrollToCurrentResult();
+  }
+
+  void _scrollToPreviousResult() {
+    if (_searchResults.isEmpty) return;
+    setState(() {
+      _currentSearchIndex = (_currentSearchIndex - 1 + _searchResults.length) %
+          _searchResults.length;
+    });
+    _scrollToCurrentResult();
+  }
+
+  void _scrollToCurrentResult() {
+    if (_currentSearchIndex >= 0 &&
+        _currentSearchIndex < _searchResults.length) {
+      final currentNode = _searchResults[_currentSearchIndex];
+      setState(() {
+        _expandParents(currentNode);
+      });
+    }
+  }
+
+  void _expandParents(TreeNode node) {
+    TreeNode? current = node;
+    while (current != null) {
+      current.isExpanded = true;
+      current = current.parent;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -63,11 +127,54 @@ class JsonViewerPageState extends State<JsonViewerPage> {
             ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _rootNode == null
-              ? const Center(child: Text('No JSON loaded'))
-              : CustomJsonTreeView(rootNode: _rootNode!),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    decoration: const InputDecoration(
+                      hintText: 'Search...',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                  ),
+                ),
+                ElevatedButton(
+                  onPressed: _performSearch,
+                  child: const Text('Search'),
+                ),
+                if (_searchResults.isNotEmpty) ...[
+                  IconButton(
+                    icon: const Icon(Icons.arrow_upward),
+                    onPressed: _scrollToPreviousResult,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_downward),
+                    onPressed: _scrollToNextResult,
+                  ),
+                  Text('${_currentSearchIndex + 1}/${_searchResults.length}'),
+                ],
+              ],
+            ),
+          ),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _rootNode == null
+                    ? const Center(child: Text('No JSON loaded'))
+                    : CustomJsonTreeView(
+                        rootNode: _rootNode!,
+                        searchQuery: _searchQuery,
+                        currentSearchNode: _currentSearchIndex >= 0
+                            ? _searchResults[_currentSearchIndex]
+                            : null,
+                      ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: _loadJsonFile,
         tooltip: 'Load JSON',
@@ -75,12 +182,25 @@ class JsonViewerPageState extends State<JsonViewerPage> {
       ),
     );
   }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 }
 
 class CustomJsonTreeView extends StatefulWidget {
   final TreeNode rootNode;
+  final String searchQuery;
+  final TreeNode? currentSearchNode;
 
-  const CustomJsonTreeView({super.key, required this.rootNode});
+  const CustomJsonTreeView({
+    super.key,
+    required this.rootNode,
+    required this.searchQuery,
+    this.currentSearchNode,
+  });
 
   @override
   CustomJsonTreeViewState createState() => CustomJsonTreeViewState();
@@ -109,7 +229,7 @@ class CustomJsonTreeViewState extends State<CustomJsonTreeView> {
   }
 
   void _onScroll() {
-    final newFirstIndex = (_scrollController.offset / 30).floor(); 
+    final newFirstIndex = (_scrollController.offset / 30).floor();
     if (newFirstIndex != _firstVisibleItemIndex) {
       setState(() {
         _firstVisibleItemIndex = newFirstIndex;
@@ -125,15 +245,42 @@ class CustomJsonTreeViewState extends State<CustomJsonTreeView> {
     });
   }
 
+  void _expandToNode(TreeNode node) {
+    TreeNode? current = node;
+    while (current != null) {
+      current.isExpanded = true;
+      current = current.parent;
+    }
+    _flattenedNodes.clear();
+    _flattenNodes(widget.rootNode);
+  }
+
+  void _scrollToSearchResult() {
+    if (widget.currentSearchNode != null) {
+      _expandToNode(widget.currentSearchNode!);
+      final index = _flattenedNodes.indexOf(widget.currentSearchNode!);
+      if (index != -1) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollController.animateTo(
+            index * 30.0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView.builder(
       controller: _scrollController,
       itemCount: _flattenedNodes.length,
-      itemExtent: 30, 
-      cacheExtent: 30 * _visibleItemCount.toDouble(), 
+      itemExtent: 30,
+      cacheExtent: 30 * _visibleItemCount.toDouble(),
       itemBuilder: (context, index) {
-        if (index < _firstVisibleItemIndex || index >= _firstVisibleItemIndex + _visibleItemCount) {
+        if (index < _firstVisibleItemIndex ||
+            index >= _firstVisibleItemIndex + _visibleItemCount) {
           return const SizedBox.shrink();
         }
         return _buildTreeNode(_flattenedNodes[index]);
@@ -145,6 +292,8 @@ class CustomJsonTreeViewState extends State<CustomJsonTreeView> {
     return TreeNodeWidget(
       node: node,
       onToggle: _toggleNode,
+      searchQuery: widget.searchQuery,
+      isCurrentSearchResult: node == widget.currentSearchNode,
     );
   }
 
